@@ -1,0 +1,225 @@
+## Phase 1 — State representation (complete)
+
+Implemented in `my-snake/`: `GameState` owns the observation and its derived
+flat occupancy grid, `SnakeState` expands each body and tracks growth and
+direction, and `SearchNode` is the future-search data carrier. The wire format
+does not include a turn number, so the agent counts observations locally.
+Move selection now consumes a `GameState` and delegates pathing, threat
+comparison, and fallback selection to short helpers.
+
+The state layer contains:
+
+- `GameState`
+  - Apple position
+  - All snake states
+  - Current turn
+  - Our snake index
+
+GameState doesn't need to draw or render the board. It needs to represent the board's state in data.
+
+I'd actually keep two representations:
+- GameState: the actual game information (snakes, apple, turn).
+- int[] board: an occupancy grid derived from that information, for fast collision and pathfinding checks.
+The board array can be rebuilt whenever a state changes. It isn't a visual board.
+
+
+- `SnakeState`
+  - Ordered body cells: head → tail
+  - Current length
+  - Pending growth counter
+  - Alive/dead status
+  - Kill count
+  - Previous direction
+
+- `SearchNode`
+  - Simulated `GameState`
+  - First move taken from the original state
+  - Search depth
+  - Evaluation score
+What is SearchNode?
+Think of it as one possible future of the game.
+Suppose your snake can move left, straight or right. Each choice creates a different future state. Each future is represented by a SearchNode.
+I'd start with:
+class SearchNode {
+    GameState state;
+
+    int firstMove;       // Original move we took
+    int depth;           // How many turns into the future
+
+    double score;        // How good this future is
+}
+
+## Phase 2 — Accurate game simulator (implemented)
+
+`GameState.simulateTurn(TurnInputs)` now advances every snake together.
+`TurnInputs` supplies absolute directions and, when needed, the next food and
+respawn cells. Those locations are random engine outcomes that are not present
+in the agent's wire input, so the simulator does not invent an engine RNG.
+`TurnResult` includes the next state plus destinations, food consumption,
+deaths, and kill attribution.
+
+The transition:
+- Move all snakes simultaneously.
+- Update each head position, including board wrapping.
+- Update body segments and tail movement.
+- Add the configured five cells of growth when food is eaten; repeated tail
+  cells preserve the engine's tail movement over following turns.
+- Detect body collisions.
+- Detect head-to-head collisions:
+  - Longer snake survives.
+  - Equal lengths: both die. Avoid
+- Handle apple consumption and growth.
+- Update kills and alive status.
+- Track the league's five-turn respawn countdown and apply injected respawn
+  cells on the due turn.
+- The full turn simulator remains available for later prediction, but it is
+  not used for current move selection.
+
+For route selection, `RoutePlanner` checks each legal first move without
+enumerating joint opponent scenarios. It creates a one-turn projected
+occupancy map, clearing tails that will vacate based on `pendingGrowth` and
+whether a snake could eat the current apple. A bounded A* search tracks our
+full body over time, including tail movement and food growth, rejects
+self-colliding routes, and measures open space after eating. It prefers the
+shortest route, permitting a detour of up to two steps only when that leaves
+substantially more reachable space. A separate check rejects a first move if
+an equal-or-longer opponent could move its head into that destination in one
+of its three legal directions, counting food growth for both snakes. On
+otherwise tied routes, the planner prefers a forced immediate kill against a
+shorter opponent, then fewer immediate escape moves for shorter opponents.
+
+Opponent bodies remain fixed after their possible first-turn tail movement;
+this avoids inventing future enemy trajectories. Search has fixed expansion
+and depth budgets for the 50 ms deadline and falls back to reachable space if
+no route is found within those bounds.
+
+Validated against the bundled engine for growth, equal and unequal
+head-to-heads, simultaneous body collisions, kill credit, and respawn timing.
+Random food and respawn locations remain explicit inputs because the protocol
+does not expose the engine's random state.
+
+The league profile respawns snakes after five turns; three consecutive
+erroneous/late answers still forfeit instead of respawning.
+
+## Phase 3 — Pathfinding and spatial evaluation
+
+Keep the existing BFS implementation.
+
+Implement:
+
+- **A\*** for paths to specific targets, especially the apple.
+  - Use toroidal Manhattan distance as the heuristic.
+  - Account for obstacles.
+  - Use the path as a candidate, not as proof that the route is safe.
+
+- **BFS / flood fill** for reachable area.
+  - Count accessible cells after a simulated move.
+  - Use it to detect traps and confined spaces.
+
+- **Time-aware route validation**
+  - Simulate our own body along candidate routes.
+  - Account for cells becoming free as tails move.
+  - Account for pending growth preventing tail movement.
+  - Never assume current occupancy remains unchanged.
+
+
+## Phase 5 — Beam search (main decision algorithm)
+
+Implement beam search over simulated game states.
+
+For each search depth:
+
+1. Expand each retained state into our possible moves.
+2. Simulate each move.
+3. Account for immediate opponent threats.
+4. Reject dead or strategically disastrous states.
+5. Evaluate remaining states.
+6. Retain only the best states for the next depth.
+
+Starting tuning values:
+- Beam width: 100–200 states.
+- Search depth: 6–10 turns.
+- Our branching factor: up to 3 moves.
+- Hard computation/time limit.
+
+Tune these experimentally under the 50 ms budget.
+
+Store the original first move in every node, so the best future sequence tells us which move to execute now.
+
+Avoid duplicate states using a state hash. Preserve some diversity so the beam doesn't consist entirely of nearly identical routes.
+
+## Phase 6 — Evaluation function
+
+Create a weighted score for each simulated state.
+
+Reward:
+- Higher maximum length achieved.
+- Current length and pending growth.
+- Safe access to food.
+- Large reachable area.
+- Multiple available escape routes.
+- Opportunities to gain length or secure kills safely.
+
+Penalize:
+- Death or imminent collision.
+- Trapped positions.
+- Very small reachable areas.
+- Dangerous head-to-head encounters.
+- Routes with no safe continuation.
+- Unnecessary distance from food.
+
+Food evaluation should consider:
+- Our A* distance to the apple.
+- Opponents' estimated arrival times.
+- Whether the route remains safe.
+- Whether eating creates a dangerous growth bottleneck.
+
+**Scoring priority:** length growth first, survival insofar as it enables further growth, kills as a tiebreaker. Do not optimize survival alone.
+
+## Phase 7 — Move selection
+
+Each turn:
+
+1. Parse the current observation.
+2. Build the current `GameState`.
+3. Generate legal relative moves: left, straight, right.
+4. Run the search.
+5. Select the first move of the highest-scoring surviving search result.
+6. If search finds no viable result, use a safe fallback based on immediate collision checks and reachable area.
+
+Never return an unvalidated move.
+
+## Phase 8 — Testing and optimization
+
+After each major implementation:
+
+- Compare simulated turns against real engine transitions.
+- Test edge wrapping and teleport/body reconstruction.
+- Test delayed growth over all five turns.
+- Test equal-length and unequal-length head-to-head collisions.
+- Test tail-vacating and tail-not-vacating cases.
+- Test states with very little free space.
+
+Use the league's built-in tests:
+
+```bash
+javac -d build my-snake/*.java
+
+python -m snake.cli gauntlet "cmd:java -cp build Snake" --seeds 1..60
+
+ME="cmd:java -cp build Snake"
+python -m snake.cli evaluate $ME survivor hungry wander --seeds 1..50
+python -m snake.cli watch $ME survivor --seed 3
+```
+
+Track:
+- Average and maximum length.
+- Win rate / placement.
+- Kill count.
+- Food eaten.
+- Deaths.
+- Decision latency.
+
+Optimize for performance across many seeds, not one impressive game.
+
+Keep every decision comfortably within the 50 ms limit. Never sacrifice reliability for a deeper search.

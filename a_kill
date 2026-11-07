@@ -1,0 +1,58 @@
+The best approach is opportunistic aggression, not hunting. Since peak length wins and kills only break ties, killing an opponent is valuable only when the risk-adjusted benefit justifies it.
+
+I'd build a policy around three levels of aggression.
+1. Take guaranteed tactical kills
+This is the highest priority.
+- If we're longer, exploit head-to-head situations where the opponent cannot avoid the collision.
+- If we're equal length, avoid the collision: both snakes die.
+- If we're shorter, never initiate a head-to-head collision.
+- Prefer attacks where the opponent's available moves are already restricted.
+This requires only checking the opponent's immediate legal escape options. No joint-move search.
+2. Restrict opponent movement
+This is where the more interesting strategy lies.
+
+Use your own snake's body and position to reduce the opponent's safe space.
+- Cut off routes: occupy cells that would otherwise provide an escape.
+- Control corridors: position yourself so an opponent has fewer safe directions.
+- Pressure toward occupied territory: make their available moves increasingly constrained.
+- Exploit low mobility: attack when their reachable area is small.
+The key algorithm here is flood fill / reachable-area analysis. Estimate how much safe space an opponent has after each possible move.
+3. Evaluate whether an attack is worth it
+Don't chase an opponent across the board. For each candidate move, evaluate:
+Factor	                    Desired outcome
+Our survival	            Essential
+Our growth potential	    High
+Opponent escape space	    Low
+Head-to-head outcome	    We win
+Our future mobility	        Preserved
+
+A kill opportunity should be rejected if pursuing it significantly reduces our own survival or growth prospects.
+My recommended implementation order
+1. Immediate kill detection: identify head-to-head wins and unavoidable opponent collisions.
+2. Opponent mobility estimation: flood-fill their reachable safe area.
+3. Attack opportunity scoring: reward moves that reduce opponent mobility while preserving ours.
+4. Selective aggression: only pursue attacks above a threshold; otherwise return to growth and survival.
+
+## Current first implementation
+
+The route planner keeps the apple route and our reachable area ahead of attack
+scoring. It rejects a candidate first step if an equal-or-longer opponent can
+reach the same head cell; lengths include food growth for both contenders when
+that cell is the current apple. For routes tied on apple distance and our
+reachable area, it prefers a forced immediate head-to-head kill, then a move
+that leaves shorter opponents with fewer legal escape cells.
+
+The kill check is local: it examines each shorter opponent's three legal next
+cells and counts a forced kill only when every alternative to colliding with
+our head is blocked. The escape estimate is deliberately just a count of
+unblocked immediate destinations—not a prediction of future territory.
+Neither check simulates joint opponent choices or predicts future turns. This
+is an opportunistic tiebreaker, not a reason to abandon food or our own open
+space.
+
+## Remaining work
+
+This first pass does not yet position the snake to herd opponents or prove
+longer-term kills. Next, tune the reachable-space scoring against league
+replays, then consider corridor control and multi-turn prediction if measured
+results show a benefit.

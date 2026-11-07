@@ -1,0 +1,57 @@
+What is SearchNode?
+Think of it as one possible future of the game.
+
+Suppose your snake can move left, straight or right. Each choice creates a different future state. Each future is represented by a SearchNode.
+
+For example:
+Node A :future state after left - score 82
+Node B :future state after straight - score 64
+
+Imagine the search is allowed to explore in deeper depths of the future states:
+Left → Straight → Right → Left → Straight
+
+After five turns, it decides this is the best sequence. But you only need to make one move now.
+`firstMove` remembers that the entire sequence began with Left.
+
+Every child node inherits its parent's firstMove. Only the initial nodes assign it.
+
+How the classes work together
+- GameState = what the game looks like at a particular moment.
+- SearchNode = one possible future game state, plus information about how you got there.
+- BeamSearch = generates and evaluates these nodes, keeping the best candidates. (I think this is later on)
+
+## Phase 2 — implemented
+
+`GameState.simulateTurn(TurnInputs)` resolves all snakes from the same
+pre-turn state. `TurnInputs` carries the absolute direction for each live
+snake, plus injected next-food and respawn cells when those random outcomes
+are needed. The protocol does not reveal the engine RNG state, so those
+outcomes cannot be reproduced from an observation alone.
+
+`TurnResult` exposes the resulting state, each attempted destination, food
+consumption, deaths, and kill attribution. The simulator handles wrapped
+movement, growth as repeated tail cells, tail-vacating collision checks,
+body collisions, head-to-head length resolution, and the league respawn
+countdown.
+
+The active route planner does not enumerate joint opponent moves or run the
+full simulator. For each of our legal first moves, it projects the board one
+turn ahead by clearing tails that will actually vacate, using `pendingGrowth`
+and whether the snake could eat the current apple. A bounded A* search then
+tracks our full body over time, including tail movement and food growth, and
+rejects self-colliding routes. Among shortest routes it prefers more open
+space after eating; it may accept a route up to two moves longer if that
+substantially increases reachable space. A separate immediate check rejects a
+first step that an equal-or-longer opponent can reach with one of its legal
+straight/left/right moves, accounting for food growth for both snakes. If
+routes tie on food distance and our reachable area, a forced immediate kill
+against a shorter opponent, then reduced immediate escape moves for shorter
+opponents, are tie-breakers.
+
+The full simulator remains available as a foundation for later prediction.
+It is not currently on the active decision path; exhaustive scenario
+simulation was too conservative for the current route-planning goal. The
+route's future board treats opponents' bodies as static after their possible
+first-turn tail movement. The A* node and expansion budgets bound work under
+the 50 ms deadline; when no food route is found within the budget, the planner
+falls back to the legal move with most reachable space.
